@@ -1,0 +1,8 @@
+#!/bin/bash
+
+set -e
+
+wget https://raw.github.com/openshift/openshift-extras/enterprise-1.2/enterprise/install-scripts/generic/openshift.sh
+mv openshift.sh /root/openshift.sh
+
+cat /root/openshift.sh >> /root/openshift-mod.sh
