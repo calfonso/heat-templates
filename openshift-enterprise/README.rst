@@ -22,8 +22,12 @@ To build with diskimage-builder, do the following in the parent directory of hea
 
   export DIB_RHSM_USER=your_rhel_subscription_username
   export DIB_RHSM_PASSWORD=your_rhel_subscription_password
-  TMP_DIR=$HOME/tmp DIB_IMAGE_SIZE=5 diskimage-builder/bin/disk-image-create --no-tmpfs -a amd64 vm rhel openshift-enterprise-broker -o RHEL64-x86_64-broker
-  TMP_DIR=$HOME/tmp DIB_IMAGE_SIZE=20 diskimage-builder/bin/disk-image-create --no-tmpfs -a amd64 vm rhel openshift-enterprise-node -o RHEL64-x86_64-node
+  TMP_DIR=$HOME/tmp 
+  DIB_IMAGE_SIZE=5 
+  diskimage-builder/bin/disk-image-create --no-tmpfs -a amd64 vm rhel openshift-enterprise-broker -o RHEL64-x86_64-broker
+  TMP_DIR=$HOME/tmp 
+  DIB_IMAGE_SIZE=20 
+  diskimage-builder/bin/disk-image-create --no-tmpfs -a amd64 vm rhel openshift-enterprise-node -o RHEL64-x86_64-node
   
 Register the RHEL64-x86_64-broker and RHEL64-x86_64-node with OpenStack Glance::
 
