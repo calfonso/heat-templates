@@ -1,0 +1,279 @@
+heat_template_version: 2013-05-23
+description: Template for setting up an AutoScaled OpenShift Enterprise environment
+parameters:
+  key_name:
+    description: Name of an existing keypair to enable SSH access to the instances
+    type: string
+  prefix:
+    Description: Your DNS Prefix
+    Type: String
+    Default: example.com
+  upstreamDNS:
+    description: Upstream DNS server
+    type: String
+    default: 8.8.8.8
+  broker_server_flavor:
+    description: Flavor of broker server
+    type: String
+    default: m1.small
+    allowed_values: [m1.small, m1.medium, m1.large, m1.xlarge]
+    constraint_description: Must be a valid server flavor
+  node_server_flavor:
+    description: Flavor of node servers
+    type: String
+    default: m1.small
+    allowed_values: [m1.small, m1.medium, m1.large, m1.xlarge]
+    constraint_description: Must be a valid server flavor
+  node_count_minimum:
+    description: Minimum number of nodes to scale down to
+    type: String
+    default: '1'
+    allowed_pattern: '[0-9]*'
+  node_count_maximum:
+    description: Maximum number of nodes to scale up to
+    type: String
+    default: '3'
+    allowed_pattern: '[0-9]*'
+  ConfInstallMethod: {Description: Installation method (yum rhsm rhn), Type: String, MinLength: '1',
+    MaxLength: '255', Default: yum, Allowed_Values: [yum, rhsm, rhn]}
+  ConfSMRegName: {Description: Subscription Manager registration username, Type: String, MinLength: '1',
+    MaxLength: '255', Default: username}
+  ConfSMRegPass: {Description: Subscription Manager registration password, Type: String, MinLength: '1',
+    MaxLength: '255', Default: password}
+  ConfSMRegPool: {Description: Pool ID for OpenShift subscription, Type: String, MinLength: '1',
+    MaxLength: '255', Default: none}
+  ConfRHNRegName: {Description: RHN registration username, Type: String, MinLength: '1',
+    MaxLength: '255', Default: username}
+  ConfRHNRegPass: {Description: RHN registration password, Type: String, MinLength: '1',
+    MaxLength: '255', Default: password}
+  ConfRHNRegAK: {Description: RHN activation key for OpenShift subscription, Type: String, MinLength: '1',
+    MaxLength: '255', Default: activationkey}
+  ConfRHELRepoBase: {Description: RHEL Repo Base, Type: String, MinLength: '1',
+    MaxLength: '255', Default: example.com}
+  ConfRepoBase: {Description: OSE Repo Base, Type: String, MinLength: '1',
+    MaxLength: '255', Default: example.com}
+  ConfJBossRepoBase: {Description: JBoss Repo Base, Type: String, MinLength: '1',
+    MaxLength: '255', Default: example.com}
+  BrokerHostname: {Description: Broker hostname, Type: String, MinLenth: '1', Default: openshift.brokerinstance.novalocal}
+  NodeHostname: {Description: Broker hostname, Type: String, MinLenth: '1', Default: openshift.nodeinstance.novalocal}
+  public_net_id:
+    type: string
+    description: >
+      ID of public network for which floating IP addresses will be allocated
+  private_net_id:
+    type: string
+    description: ID of private network into which servers get deployed
+  private_subnet_id:
+    type: string
+    description: ID of private sub network into which servers get deployed  
+
+resources:
+  broker_instance:
+    type: OS::Nova::Server
+    properties:
+      name: broker_instance
+      image: RHEL64-x86_64-broker
+      flavor: { get_param: broker_server_flavor }
+      key_name: { get_param: key_name }
+      networks:
+        - port: { get_resource: broker_port }
+
+  broker_port:
+    type: OS::Neutron::Port
+    properties:
+      network_id: { get_param: private_net_id }
+      fixed_ips:
+        - subnet_id: { get_param: private_subnet_id }
+
+  broker_floating_ip:
+    type: OS::Neutron::FloatingIP
+    properties:
+      floating_network_id: { get_param: public_net_id }
+      port_id: { get_resource: broker_port }
+
+  node_port:
+    type: OS::Neutron::Port
+    properties:
+      network_id: { get_param: private_net_id }
+      fixed_ips:
+        - subnet_id: { get_param: private_subnet_id }
+
+  node_floating_ip:
+    type: OS::Neutron::FloatingIP
+    properties:
+      floating_network_id: { get_param: public_net_id }
+      port_id: { get_resource: node_port }
+
+  openshift_enterprise_security_group:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Standard firewall rules
+      SecurityGroupIngress:
+      - {IpProtocol: udp, FromPort: '53', ToPort: '53', CidrIp: 0.0.0.0/0}
+      - {IpProtocol: tcp, FromPort: '53', ToPort: '53', CidrIp: 0.0.0.0/0}
+      - {IpProtocol: tcp, FromPort: '22', ToPort: '22', CidrIp: 0.0.0.0/0}
+      - {IpProtocol: tcp, FromPort: '80', ToPort: '80', CidrIp: 0.0.0.0/0}
+      - {IpProtocol: tcp, FromPort: '443', ToPort: '443', CidrIp: 0.0.0.0/0}
+      - {IpProtocol: tcp, FromPort: '8000', ToPort: '8000', CidrIp: 0.0.0.0/0}
+      - {IpProtocol: tcp, FromPort: '8443', ToPort: '8443', CidrIp: 0.0.0.0/0}
+  
+  broker_wait_handle:
+    Type: AWS::CloudFormation::WaitConditionHandle
+  
+  broker_wait_condition:
+    Type: AWS::CloudFormation::WaitCondition
+    DependsOn: broker_instance
+    Properties:
+      Handle:
+        Ref: broker_wait_handle
+      Timeout: '6000'
+  
+  broker_instance:
+    type: OS::Nova::Server
+    properties:
+      name: broker_instance
+      image: RHEL64-x86_64-broker
+      flavor: { get_param: broker_server_flavor }
+      key_name: { get_param: key_name }
+      networks:
+        - port: { get_resource: broker_port }
+      security_groups: [{ get_resource: openshift_enterprise_security_group }]
+      user_data:
+        str_replace:
+          template: |  
+            #!/bin/bash -x
+            
+            export CONF_BROKER_IP_ADDR=BROKER_FLOATING_IP
+            export CONF_NODE_IP_ADDR=NODE_FLOATING_IP
+            export CONF_NAMED_IP_ADDR=BROKER_FLOATING_IP
+            export CONF_DOMAIN=PREFIX
+            export CONF_BROKER_HOSTNAME=BROKER_HOSTNAME
+            export CONF_NODE_HOSTNAME=NODE_HOSTNAME
+            export CONF_NAMED_HOSTNAME=BROKER_HOSTNAME
+            export CONF_ACTIVEMQ_HOSTNAME=BROKER_HOSTNAME
+            export CONF_DATASTORE_HOSTNAME=BROKER_HOSTNAME
+            export PREFIX=PREFIX
+            export DNS_SEC_KEY=`cat /var/named/K${PREFIX}.*.key  | awk '{print $8}'`
+            export CONF_INSTALL_METHOD=P_CONF_INSTALL_METHOD
+            export CONF_SM_REG_NAME=P_CONF_SM_REG_NAME
+            export CONF_SM_REG_PASS=P_CONF_SM_REG_PASS
+            export CONF_SM_REG_POOL=P_CONF_SM_REG_POOL
+            export CONF_RHN_REG_NAME=P_CONF_RHN_REG_NAME
+            export CONF_RHN_REG_PASS=P_CONF_RHN_REG_PASS
+            export CONF_RHN_REG_ACTKEY=P_CONF_RHN_REG_ACTKEY
+            export CONF_REPOS_BASE=P_CONF_REPOS_BASE
+            export CONF_JBOSS_REPO_BASE=P_CONF_JBOSS_REPO_BASE
+            export CONF_RHEL_REPO=P_CONF_RHEL_REPO
+            export CONF_INSTALL_COMPONENTS=broker,named,datastore,activemq
+            [[ "$CONF_INSTALL_METHOD" == "rhsm" ]] && yum-config-manager rhel-6-server-rpms --enable
+            rm -f /root/openshift.sh;wget https://raw.github.com/openshift/openshift-extras/enterprise-1.2/enterprise/install-scripts/generic/openshift.sh
+            chmod +x ./openshift.sh
+            ./openshift.sh 2>&1 | tee /tmp/openshift.out 
+            echo "${CONF_NODE_HOSTNAME%.${PREFIX}}                      A       ${CONF_NODE_IP_ADDR}" >> /var/named/dynamic/${PREFIX}.db
+            # All is well so signal success
+            setenforce 1
+            /usr/bin/cfn-signal -e 0 --data "${DNS_SEC_KEY}" -r "Broker setup complete" "BROKER_WAIT_HANDLE"
+            reboot
+          params:
+            BROKER_FLOATING_IP: { get_resource: broker_floating_ip }
+            NODE_FLOATING_IP: { get_resource: node_floating_ip }
+            PREFIX: { get_param: prefix }
+            BROKER_HOSTNAME: { get_param: BrokerHostname }
+            NODE_HOSTNAME: { get_param: NodeHostname }
+            BROKER_WAIT_HANDLE: { get_resource: broker_wait_handle}
+            P_CONF_INSTALL_METHOD: { get_param: ConfInstallMethod}
+            P_CONF_SM_REG_NAME: { get_param: ConfSMRegName}
+            P_CONF_SM_REG_PASS: { get_param: ConfSMRegPass}
+            P_CONF_SM_REG_POOL: { get_param: ConfSMRegPool}
+            P_CONF_RHN_REG_NAME: { get_param: ConfRHNRegName}
+            P_CONF_RHN_REG_PASS: { get_param: ConfRHNRegPass}
+            P_CONF_RHN_REG_ACTKEY: { get_param: ConfRHNRegAK}
+            P_CONF_REPOS_BASE: { get_param: ConfRepoBase}
+            P_CONF_JBOSS_REPO_BASE: { get_param: ConfJBossRepoBase}
+            P_CONF_RHEL_REPO: { get_param: ConfRHELRepoBase}
+
+  node_wait_handle:
+    Type: AWS::CloudFormation::WaitConditionHandle
+  
+  node_wait_condition:
+    Type: AWS::CloudFormation::WaitCondition
+    DependsOn: node_instance
+    Properties:
+      Handle:
+        Ref: node_wait_handle
+      Timeout: '6000'
+
+  node_instance:
+    type: OS::Nova::Server
+    properties:
+      name: node_instance
+      image: RHEL64-x86_64-node
+      flavor: { get_param: node_server_flavor }
+      key_name: { get_param: key_name }
+      networks:
+        - port: { get_resource: node_port }
+      security_groups: [{ get_resource: openshift_enterprise_security_group }]
+      user_data:
+        str_replace:
+          template: |
+            #!/bin/bash -x
+
+            export CONF_BROKER_IP_ADDR=BROKER_FLOATING_IP
+            export CONF_NODE_IP_ADDR=NODE_FLOATING_IP
+            export CONF_NAMED_IP_ADDR=BROKER_FLOATING_IP
+            export CONF_DOMAIN=PREFIX
+            export CONF_BROKER_HOSTNAME=BROKER_HOSTNAME
+            export CONF_NODE_HOSTNAME=NODE_HOSTNAME
+            export CONF_NAMED_HOSTNAME=BROKER_HOSTNAME
+            export CONF_ACTIVEMQ_HOSTNAME=BROKER_HOSTNAME
+            export CONF_DATASTORE_HOSTNAME=BROKER_HOSTNAME
+            export CONF_INSTALL_METHOD=P_CONF_INSTALL_METHOD
+            export CONF_SM_REG_NAME=P_CONF_SM_REG_NAME
+            export CONF_SM_REG_PASS=P_CONF_SM_REG_PASS
+            export CONF_SM_REG_POOL=P_CONF_SM_REG_POOL
+            export CONF_RHN_REG_NAME=P_CONF_RHN_REG_NAME
+            export CONF_RHN_REG_PASS=P_CONF_RHN_REG_PASS
+            export CONF_RHN_REG_ACTKEY=P_CONF_RHN_REG_ACTKEY
+            export CONF_REPOS_BASE=P_CONF_REPOS_BASE
+            export CONF_JBOSS_REPO_BASE=P_CONF_JBOSS_REPO_BASE
+            export CONF_RHEL_REPO=P_CONF_RHEL_REPO
+            export CONF_INSTALL_COMPONENTS=node
+            rm -f /root/openshift.sh;wget https://raw.github.com/openshift/openshift-extras/enterprise-1.2/enterprise/install-scripts/generic/openshift.sh
+            yum clean all
+            [[ "$CONF_INSTALL_METHOD" == "rhsm" ]] && yum-config-manager rhel-6-server-rpms --enable
+            chmod +x ./openshift.sh
+            ./openshift.sh 2>&1 | tee /tmp/openshift.out 
+            setenforce 1
+            /usr/bin/cfn-signal -e 0 --data "${DNS_SEC_KEY}" -r "Node setup complete" "NODE_WAIT_HANDLE"
+            reboot
+          params:
+            BROKER_FLOATING_IP: { get_resource: broker_floating_ip }
+            NODE_FLOATING_IP: { get_resource: node_floating_ip }
+            PREFIX: { get_param: prefix }
+            BROKER_HOSTNAME: { get_param: BrokerHostname }
+            NODE_HOSTNAME: { get_param: NodeHostname }
+            NODE_WAIT_HANDLE: { get_resource: node_wait_handle}
+            P_CONF_INSTALL_METHOD: { get_param: ConfInstallMethod}
+            P_CONF_SM_REG_NAME: { get_param: ConfSMRegName}
+            P_CONF_SM_REG_PASS: { get_param: ConfSMRegPass}
+            P_CONF_SM_REG_POOL: { get_param: ConfSMRegPool}
+            P_CONF_RHN_REG_NAME: { get_param: ConfRHNRegName}
+            P_CONF_RHN_REG_PASS: { get_param: ConfRHNRegPass}
+            P_CONF_RHN_REG_ACTKEY: { get_param: ConfRHNRegAK}
+            P_CONF_REPOS_BASE: { get_param: ConfRepoBase}
+            P_CONF_JBOSS_REPO_BASE: { get_param: ConfJBossRepoBase}
+            P_CONF_RHEL_REPO: { get_param: ConfRHELRepoBase}
+
+outputs:
+  OpenShiftConsole:
+    Value:
+      Fn::Join:
+      - ''
+      - ['https://', { get_attr: [ broker_instance, first_address ] }, '/console']
+    description: URL for OpenShift Enterprises console
+  NameServerEntry:
+    Value:
+      Fn::Join:
+      - ''
+      - ['nameserver ', { get_attr: [ broker_instance, first_address ] } ]
+    description: Entry to insert into /etc/resolv.conf for application host names to resolve
